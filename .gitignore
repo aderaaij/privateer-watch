@@ -1,0 +1,119 @@
+# Environment and Configuration
+.env
+*.env
+!.env.example
+config.xml
+*.conf
+!example.conf
+
+# Claude files
+.claude
+CLAUDE.md
+
+# Logs and Runtime
+*.log*
+logs/
+*.pid
+*.lock
+*.lck
+ipc-socket
+lockfile
+
+# Databases
+*.db
+*.db-*
+*.sqlite*
+*.dat
+
+# Backups
+backups/
+*.bak
+*.backup
+*.old
+*.tmp
+
+# WireGuard Configs
+wireguard_configs/
+*.ovpn
+
+# Privado API Data (sensitive)
+scripts/privado-api/data/
+privado-api/data/
+
+# Container Config Directories (contain credentials, API keys, databases)
+gluetun/
+qbittorrent/
+sabnzbd/
+radarr/
+sonarr/
+bazarr/
+prowlarr/
+readarr/
+overseerr/
+seerr/
+plex/
+pullio/
+mcp-server/
+cleanuparr/
+recyclarr/*
+!recyclarr/recyclarr.yml
+scoutarr/
+
+# Cache and Temp
+cache/
+Cache/
+*.cache*
+temp/
+tmp/
+.tmp/
+
+# Transcoding
+transcode/
+transcodes/
+PhotoTranscoder/
+Codecs/
+
+# Certificates and Keys
+*.p12
+*.pem
+*.key
+*.crt
+*.cer
+!example.key
+
+# OS Files
+.DS_Store
+Thumbs.db
+.Spotlight-V100
+.Trashes
+
+# IDE Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+venv/
+env/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Archives (but keep example configs)
+*.zip
+*.tar
+*.gz
+!example*.zip
+!example*.tar.gz
+
+# Synology specific
+@eaDir/
+.syno/
+#recycle/

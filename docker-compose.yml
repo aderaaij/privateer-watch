@@ -1,0 +1,377 @@
+services:
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    labels:
+      # Excluded from Pullio auto-updates: recreating gluetun orphans
+      # qbittorrent/sabnzbd (network_mode: service:gluetun). Update manually.
+      - org.hotio.pullio.update=false
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - DOT_START=off
+      - PUBLICIP_API=ip2location
+      - WIREGUARD_ENDPOINT_IP=${WIREGUARD_ENDPOINT_IP}
+      - WIREGUARD_ENDPOINT_PORT=${WIREGUARD_ENDPOINT_PORT}
+      - WIREGUARD_PUBLIC_KEY=${WIREGUARD_PUBLIC_KEY}
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
+      - FIREWALL_VPN_INPUT_PORTS=24140
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - HTTP_CONTROL_SERVER_AUTH_DEFAULT_ROLE={"auth":"none"}
+    network_mode: synobridge
+    ports:
+      - 8080:8080 # SABnzbd port (mapped for external access)
+      - 8090:8090 # port for qbittorrent
+      - 8005:8000 # Gluetun HTTP Control Server port
+      - 24140:24140/tcp # qBittorrent incoming peer connections
+      - 24140:24140/udp # qBittorrent incoming peer connections (UDP)
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DOCKERCONFDIR}/gluetun:/config
+    restart: always
+
+  # SABnzbd - https://hotio.dev/containers/sabnzbd/
+  #
+  # Don't forget to create the directory, change the -u value if needed (the created user)
+  # sudo -u docker mkdir -m=00775 ${DOCKERCONFDIR}/sabnzbd
+  #
+  sabnzbd:
+    container_name: sabnzbd
+    image: ghcr.io/hotio/sabnzbd
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+      #ports:
+      #- 8080:8080
+    network_mode: service:gluetun # run on the vpn network
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - UMASK=002
+      - WEBUI_PORTS=8080/tcp,8080/udp
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DOCKERCONFDIR}/sabnzbd:/config
+      - ${DOCKERSTORAGEDIR}/usenet:/data/usenet:rw
+
+  # QBittorrent - https://hotio.dev/containers/qbittorrent/  
+  # # #
+  qbittorrent:
+    image: ghcr.io/hotio/qbittorrent:latest
+    container_name: qbittorrent
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - WEBUI_PORT=8090
+      - WEBUI_PORTS=8090/tcp,8090/udp
+      - UMASK=022
+    volumes:
+      - ${DOCKERCONFDIR}/qbittorrent:/config
+      - ${DOCKERSTORAGEDIR}/torrents:/data/torrents
+    network_mode: service:gluetun # run on the vpn network
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Radarr - https://hotio.dev/containers/radarr/
+  # mkdir ${DOCKERCONFDIR}/radarr
+  radarr:
+    container_name: radarr
+    image: ghcr.io/hotio/radarr:latest
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    ports:
+      - 7878:7878
+    network_mode: synobridge
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - UMASK=002
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DOCKERCONFDIR}/radarr:/config
+      - ${DOCKERSTORAGEDIR}:/data
+
+  # Sonarr - https://hotio.dev/containers/sonarr/
+  # mkdir ${DOCKERCONFDIR}/sonarr
+  sonarr:
+    container_name: sonarr
+    image: ghcr.io/hotio/sonarr:release
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    ports:
+      - 8989:8989
+    network_mode: synobridge
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - UMASK=002
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DOCKERCONFDIR}/sonarr:/config
+      - ${DOCKERSTORAGEDIR}:/data
+
+  # Bazarr - https://hotio.dev/containers/bazarr/
+  # mkdir ${DOCKERCONFDIR}/bazarr
+  bazarr:
+    container_name: bazarr
+    image: ghcr.io/hotio/bazarr:release
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    ports:
+      - 6767:6767
+    network_mode: synobridge
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - UMASK=002
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DOCKERCONFDIR}/bazarr:/config
+      - ${DOCKERSTORAGEDIR}/media:/data/media
+
+  # Prowlarr - https://hotio.dev/containers/prowlarr/
+  #
+  # Don't forget to create the directory, change chown command if needed (the user:group part)
+  # sudo -u docker mkdir -m=00775 ${DOCKERCONFDIR}/prowlarr
+  #
+  prowlarr:
+    container_name: prowlarr
+    image: ghcr.io/hotio/prowlarr:release
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-file: ${DOCKERLOGGING_MAXFILE}
+        max-size: ${DOCKERLOGGING_MAXSIZE}
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    ports:
+      - 9696:9696
+    network_mode: synobridge
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - UMASK=002
+      - ARGS=
+    volumes:
+      - ${DOCKERCONFDIR}/prowlarr:/config:rw
+
+  # Seerr - Media request management (https://docs.seerr.dev)
+  # Runs as node user (UID 1000) - ensure config dir permissions: chown -R 1000:1000 ${DOCKERCONFDIR}/seerr
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    init: true
+    restart: unless-stopped
+    environment:
+      - TZ=${TZ}
+      - LOG_LEVEL=info
+    ports:
+      - 5055:5055
+    volumes:
+      - ${DOCKERCONFDIR}/seerr:/app/config
+    network_mode: synobridge
+  # MCP Server - Claude Desktop/Code integration for monitoring all services
+  # Source: https://github.com/aderaaij/mcp-mediastack
+  mediastack-mcp:
+    image: ghcr.io/aderaaij/mcp-mediastack:latest
+    container_name: mediastack-mcp
+    restart: unless-stopped
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    ports:
+      - 8888:8888
+    network_mode: synobridge
+    environment:
+      - MCP_TRANSPORT=sse
+      - MCP_PORT=8888
+      - NAS_HOST=${NAS_HOST}
+      # Keyless services: setting the port enables their MCP tools
+      - SCOUTARR_PORT=5839
+      - CLEANUPARR_PORT=11011
+      - SONARR_API_KEY=${MCP_SONARR_API_KEY}
+      - RADARR_API_KEY=${MCP_RADARR_API_KEY}
+      - SABNZBD_API_KEY=${MCP_SABNZBD_API_KEY}
+      - PROWLARR_API_KEY=${MCP_PROWLARR_API_KEY}
+      - READARR_API_KEY=${MCP_READARR_API_KEY}
+      - BAZARR_API_KEY=${MCP_BAZARR_API_KEY}
+      - SEERR_API_KEY=${MCP_SEERR_API_KEY}
+      - QBITTORRENT_USERNAME=${MCP_QBITTORRENT_USERNAME}
+      - QBITTORRENT_PASSWORD=${MCP_QBITTORRENT_PASSWORD}
+
+  # Mediastack dashboard - single-pane web UI for the stack (VPN, storage,
+  # queues, health, calendar). Repo: https://github.com/aderaaij/mediastack-dashboard
+  mediastack-dashboard:
+    image: ghcr.io/aderaaij/mediastack-dashboard:latest
+    container_name: mediastack-dashboard
+    restart: unless-stopped
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    ports:
+      - 8899:8899
+    network_mode: synobridge
+    # docker group (gid 65536) grants read access to the socket; the
+    # dashboard's docker client is GET-only (monitoring, never lifecycle)
+    group_add:
+      - "65536"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${DOCKERCONFDIR}/logs:/logs:ro
+    environment:
+      - NAS_HOST=${NAS_HOST}
+      - LOGS_DIR=/logs
+      - SONARR_API_KEY=${MCP_SONARR_API_KEY}
+      - RADARR_API_KEY=${MCP_RADARR_API_KEY}
+      - SABNZBD_API_KEY=${MCP_SABNZBD_API_KEY}
+      - PROWLARR_API_KEY=${MCP_PROWLARR_API_KEY}
+      - READARR_API_KEY=${MCP_READARR_API_KEY}
+      - BAZARR_API_KEY=${MCP_BAZARR_API_KEY}
+      - SEERR_API_KEY=${MCP_SEERR_API_KEY}
+      - QBITTORRENT_USERNAME=${MCP_QBITTORRENT_USERNAME}
+      - QBITTORRENT_PASSWORD=${MCP_QBITTORRENT_PASSWORD}
+
+  # Recyclarr - syncs TRaSH-guides quality profiles & custom formats into
+  # Radarr/Sonarr on a schedule. Config: ./recyclarr/recyclarr.yml
+  # Manual sync: docker exec recyclarr recyclarr sync
+  recyclarr:
+    image: ghcr.io/recyclarr/recyclarr:latest
+    container_name: recyclarr
+    restart: unless-stopped
+    network_mode: synobridge
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    environment:
+      - TZ=${TZ}
+      - CRON_SCHEDULE=@daily
+      - RADARR_API_KEY=${MCP_RADARR_API_KEY}
+      - SONARR_API_KEY=${MCP_SONARR_API_KEY}
+      # Fall back to container-name DNS when not set in .env
+      - RADARR_URL=${RADARR_URL:-http://radarr:7878}
+      - SONARR_URL=${SONARR_URL:-http://sonarr:8989}
+    volumes:
+      - ${DOCKERCONFDIR}/recyclarr:/config
+
+  # Scoutarr - batch-triggers upgrade searches across the Radarr/Sonarr
+  # libraries (tag-based, so each item is only searched once). Web UI :5839
+  scoutarr:
+    image: ghcr.io/sufxgit/scoutarr:latest
+    container_name: scoutarr
+    restart: unless-stopped
+    network_mode: synobridge
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    ports:
+      - 5839:5839
+    environment:
+      - NODE_ENV=production
+      - TZ=${TZ}
+      - LOG_LEVEL=info
+    volumes:
+      - ${DOCKERCONFDIR}/scoutarr:/app/config
+
+  # Cleanuparr - strike-based removal of stalled/metadata-stuck/dead downloads;
+  # blocklists them in Sonarr/Radarr and triggers a re-search. Web UI :11011
+  cleanuparr:
+    image: ghcr.io/cleanuparr/cleanuparr:latest
+    container_name: cleanuparr
+    restart: unless-stopped
+    network_mode: synobridge
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
+    ports:
+      - 11011:11011
+    environment:
+      - PORT=11011
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ${DOCKERCONFDIR}/cleanuparr:/config
+
+  ## Readarrr
+  readarr:
+    image: ghcr.io/hotio/readarr:latest
+    container_name: readarr
+    restart: unless-stopped
+    environment: 
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - LOG_LEVEL=info
+    ports:
+      - 8787:8787
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - ${DOCKERCONFDIR}/readarr:/config
+      - ${DOCKERSTORAGEDIR}:/data
+    network_mode: synobridge  
