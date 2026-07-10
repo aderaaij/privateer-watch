@@ -175,52 +175,29 @@ test_configuration() {
     fi
 }
 
-# Function to test Privado API scripts
+# Function to test the vendored privado-wg CLI
 test_privado_api() {
-    log_print "INFO" "Testing Privado API functionality..."
-    
-    # Test authentication (dry run)
-    if [ -f "$PRIVADO_API_DIR/privado_login.sh" ]; then
-        log_print "INFO" "Testing Privado login script syntax..."
-        if bash -n "$PRIVADO_API_DIR/privado_login.sh"; then
-            log_print "PASS" "Privado login script syntax is valid"
-        else
-            log_print "FAIL" "Privado login script has syntax errors"
-            return 1
-        fi
-    else
-        log_print "FAIL" "Privado login script not found"
+    log_print "INFO" "Testing privado-wg CLI..."
+
+    if [ ! -f "$PRIVADO_API_DIR/privado-wg" ]; then
+        log_print "FAIL" "privado-wg CLI not found"
         return 1
     fi
-    
-    # Test server list script
-    if [ -f "$PRIVADO_API_DIR/privado_get_servers.sh" ]; then
-        log_print "INFO" "Testing server list script syntax..."
-        if bash -n "$PRIVADO_API_DIR/privado_get_servers.sh"; then
-            log_print "PASS" "Server list script syntax is valid"
-        else
-            log_print "FAIL" "Server list script has syntax errors"
-            return 1
-        fi
+
+    if bash -n "$PRIVADO_API_DIR/privado-wg"; then
+        log_print "PASS" "privado-wg CLI syntax is valid"
     else
-        log_print "FAIL" "Server list script not found"
+        log_print "FAIL" "privado-wg CLI has syntax errors"
         return 1
     fi
-    
-    # Test config generation script
-    if [ -f "$PRIVADO_API_DIR/privado_generate_config.sh" ]; then
-        log_print "INFO" "Testing config generation script syntax..."
-        if bash -n "$PRIVADO_API_DIR/privado_generate_config.sh"; then
-            log_print "PASS" "Config generation script syntax is valid"
-        else
-            log_print "FAIL" "Config generation script has syntax errors"
-            return 1
-        fi
+
+    if [ -x "$PRIVADO_API_DIR/privado-wg" ]; then
+        log_print "PASS" "privado-wg CLI is executable"
     else
-        log_print "FAIL" "Config generation script not found"
+        log_print "FAIL" "privado-wg CLI is not executable"
         return 1
     fi
-    
+
     return 0
 }
 
@@ -358,9 +335,7 @@ main() {
     test_file_exists "$SCRIPT_DIR/auto_update_wireguard.sh" "Main automation script"
     test_file_exists "$SCRIPT_DIR/restart_vpn_stack.sh" "VPN stack restart script"
     test_file_exists "$SCRIPT_DIR/wireguard_monitor.sh" "Enhanced monitoring script"
-    test_file_exists "$PRIVADO_API_DIR/privado_login.sh" "Privado login script"
-    test_file_exists "$PRIVADO_API_DIR/privado_get_servers.sh" "Privado server list script"
-    test_file_exists "$PRIVADO_API_DIR/privado_generate_config.sh" "Privado config generation script"
+    test_file_exists "$PRIVADO_API_DIR/privado-wg" "privado-wg CLI (vendored)"
     test_privado_api
     test_automation_script
     test_monitoring_script

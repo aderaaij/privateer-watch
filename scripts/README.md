@@ -111,18 +111,20 @@ Creates the penalty custom formats for the space-saver quality profiles
 if the profiles are ever recreated.
 
 ### 12. `privado-api/`
-Privado VPN API integration for automated server management. The API client
-lives in its own project — [privado-wg](https://github.com/aderaaij/privado-wg) —
-and a copy is vendored here; the original script names are kept as thin
-wrappers so existing docs and DSM tasks keep working:
-- `privado-wg` - Vendored CLI (auth, server list, WireGuard provisioning);
+Privado VPN API integration. The API client lives in its own project —
+[privado-wg](https://github.com/aderaaij/privado-wg) — vendored here as a
+single-file CLI that `auto_update_wireguard.sh` calls directly (auth with
+token caching, server list, WireGuard provisioning). The stack-specific part
+— writing the `WIREGUARD_*` vars into `.env` with a backup — lives in
+`auto_update_wireguard.sh` itself.
+- `privado-wg` - Vendored CLI;
   sync with `curl -fsSL -o privado-wg https://raw.githubusercontent.com/aderaaij/privado-wg/main/privado-wg`
-- `privado_login.sh` - Wrapper: loads `.env` creds, runs `privado-wg login --force`
-- `privado_get_servers.sh` - Wrapper: runs `privado-wg servers --refresh`
-- `privado_generate_config.sh` - Wrapper: runs `privado-wg config <location>`,
-  then writes the `WIREGUARD_*` vars into the stack `.env` (with backup) —
-  the only stack-specific part
 - `data/` - Cached API data (gitignored — contains tokens)
+
+To drive the CLI manually it needs the Privado credentials in its environment:
+```bash
+sudo bash -c 'set -a; . <stack-root>/.env; set +a; <stack-root>/scripts/privado-api/privado-wg servers'
+```
 
 ### 13. `lib/common.sh`
 Shared helpers sourced by the other scripts: path/`.env` resolution,
@@ -210,9 +212,6 @@ When Privado changes their WireGuard configuration:
 │   ├── test_automation.sh
 │   └── privado-api/            # Privado VPN API integration
 │       ├── privado-wg          # Vendored CLI (github.com/aderaaij/privado-wg)
-│       ├── privado_login.sh    # Back-compat wrappers around privado-wg
-│       ├── privado_get_servers.sh
-│       ├── privado_generate_config.sh
 │       └── data/
 ├── wireguard_configs/          # Place new .conf files here
 │   └── processed/              # Archived processed configs
@@ -281,19 +280,15 @@ sudo <stack-root>/scripts/auto_update_wireguard.sh force
 ```
 This re-authenticates with Privado's API, fetches a fresh server, updates `.env`, and restarts gluetun.
 
-**Step 2: If the Privado API token is expired**, re-login first:
-```bash
-sudo bash <stack-root>/scripts/privado-api/privado_login.sh
-```
-
-**Step 3: Bring containers back up.** After login or manual `.env` changes, gluetun may not restart automatically. Always run:
+**Step 2: Bring containers back up.** After *manual* `.env` changes (step 1
+handles its own restart), gluetun may not restart automatically. Run:
 ```bash
 cd <stack-root>
 docker-compose up -d
 ```
 This ensures gluetun and all dependent containers (qbittorrent, sabnzbd) are recreated with the new config.
 
-**Step 4: Verify**
+**Step 3: Verify**
 ```bash
 docker logs gluetun --tail 20
 bash <stack-root>/scripts/check_vpn.sh

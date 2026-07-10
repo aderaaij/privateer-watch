@@ -4,7 +4,7 @@
 
 > A fully automated media server stack running on Synology NAS with Docker. Features the complete *arr ecosystem (Radarr, Sonarr, Bazarr, Prowlarr, Readarr), download clients (SABnzbd, qBittorrent), media requests (Seerr), automated VPN monitoring with Gluetun — plus TRaSH-guides syncing (Recyclarr), disk-space reclamation, a status dashboard, and an MCP server for LLM-driven management.
 >
-> What sets this stack apart from the many similar ones: **API-driven WireGuard automation for Privado VPN** (auto-rotation and recovery when the provider silently rotates server configs) and a **space-saver system** that automatically replaces oversized remuxes with efficient encodes ([docs/space-saver.md](docs/space-saver.md)).
+> What sets this stack apart from the many similar ones: **API-driven WireGuard automation for Privado VPN** (auto-rotation and recovery when the provider silently rotates server configs — the API client is its own project, [privado-wg](https://github.com/aderaaij/privado-wg)) and a **space-saver system** that automatically replaces oversized remuxes with efficient encodes ([docs/space-saver.md](docs/space-saver.md)).
 
 ## 🎯 What This Provides
 
@@ -181,10 +181,7 @@ Synology assumptions worth knowing if you run something else: the compose file u
 │   ├── task_monitor.sh           # DSM task wrapper (monitor)
 │   ├── task_update.sh            # DSM task wrapper (update)
 │   └── privado-api/              # Privado VPN API integration
-│       ├── privado_login.sh      # Authenticate with Privado API
-│       ├── privado_get_servers.sh # Fetch server list
-│       ├── privado_generate_config.sh # Generate WG config
-│       └── ...                   # Helpers (login, server resolution, templating)
+│       └── privado-wg            # Vendored CLI (github.com/aderaaij/privado-wg)
 └── docs/
     ├── synology-setup.md         # Detailed setup instructions
     ├── automation-features.md    # VPN automation deep-dive

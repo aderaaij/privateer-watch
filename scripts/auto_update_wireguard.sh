@@ -25,6 +25,12 @@ load_env
 
 # Configuration (ROOT_DIR/ENV_FILE/COMPOSE come from common.sh)
 PRIVADO_API_DIR="$SCRIPT_DIR/privado-api"
+# Vendored Privado API client (github.com/aderaaij/privado-wg). Handles
+# auth (with token caching + 401 retry), server list, and WireGuard
+# provisioning; reads PRIVADO_USERNAME/PRIVADO_PASSWORD from the environment,
+# which load_env exported above.
+PRIVADO_WG="$PRIVADO_API_DIR/privado-wg"
+export PRIVADO_WG_DATA_DIR="${PRIVADO_WG_DATA_DIR:-$PRIVADO_API_DIR/data}"
 LOG_FILE="$ROOT_DIR/logs/auto_wireguard.log"
 GLUETUN_CONTAINER="gluetun"
 
@@ -52,7 +58,14 @@ send_notification() {
     local level="${3:-info}"
     
     log "$level" "$title: $message"
-    
+
+    # Native Synology notification on failures (no-op off-Synology). Success
+    # cases are skipped: the monitor already sends its own DSM notices for
+    # recovery events, and manual runs show the outcome in the terminal.
+    if [ "$level" = "error" ]; then
+        dsm_notify "$title" "$message"
+    fi
+
     # Send Discord notification if webhook is configured
     if [ -n "${PULLIO_DISCORD_WEBHOOK:-}" ]; then
         local color="65280"  # Green
@@ -199,67 +212,67 @@ update_rotation_timestamp() {
     date +%s > "$last_rotation_file"
 }
 
-# Function to authenticate with Privado
-authenticate_privado() {
-    if [ ! -f "$PRIVADO_API_DIR/data/token.json" ]; then
-        log "info" "Authenticating with Privado VPN..."
-        if ! "$PRIVADO_API_DIR/privado_login.sh"; then
-            log "error" "Failed to authenticate with Privado VPN"
-            return 1
-        fi
-    else
-        # Check if token is still valid (simple check).
-        # GNU stat (Synology) uses -c %Y; BSD/macOS stat uses -f %m.
-        local token_file="$PRIVADO_API_DIR/data/token.json"
-        local token_mtime
-        token_mtime=$(stat -c %Y "$token_file" 2>/dev/null || stat -f %m "$token_file" 2>/dev/null || echo 0)
-        local token_age=$(( $(date +%s) - token_mtime ))
-        if [ "$token_age" -gt 3600 ]; then  # Token older than 1 hour
-            log "info" "Token expired, re-authenticating..."
-            if ! "$PRIVADO_API_DIR/privado_login.sh"; then
-                log "error" "Failed to re-authenticate with Privado VPN"
-                return 1
-            fi
-        fi
-    fi
-    
-    return 0
-}
+# Write new WireGuard credentials into .env, backing up the old file first.
+# Keys are base64 (can contain / and +), hence | as the sed delimiter.
+update_env_file() {
+    local endpoint_ip="$1" endpoint_port="$2" public_key="$3"
+    local private_key="$4" addresses="$5"
 
-# Function to update server list
-update_server_list() {
-    log "info" "Updating server list..."
-    if ! "$PRIVADO_API_DIR/privado_get_servers.sh"; then
-        log "error" "Failed to update server list"
-        return 1
-    fi
-    return 0
+    local backup_file="$ROOT_DIR/backups/.env.backup.$(date +%Y%m%d_%H%M%S)"
+    mkdir -p "$ROOT_DIR/backups"
+    cp "$ENV_FILE" "$backup_file"
+    log "info" "Backed up .env to $backup_file"
+
+    sed -i.tmp \
+        -e "s|^WIREGUARD_ENDPOINT_IP=.*|WIREGUARD_ENDPOINT_IP=\"$endpoint_ip\"|" \
+        -e "s|^WIREGUARD_ENDPOINT_PORT=.*|WIREGUARD_ENDPOINT_PORT=\"$endpoint_port\"|" \
+        -e "s|^WIREGUARD_PUBLIC_KEY=.*|WIREGUARD_PUBLIC_KEY=\"$public_key\"|" \
+        -e "s|^WIREGUARD_PRIVATE_KEY=.*|WIREGUARD_PRIVATE_KEY=\"$private_key\"|" \
+        -e "s|^WIREGUARD_ADDRESSES=.*|WIREGUARD_ADDRESSES=\"$addresses\"|" \
+        "$ENV_FILE"
+    rm -f "$ENV_FILE.tmp"
+
+    # The script-level `set -o allexport; source .env` at startup exported the
+    # OLD WIREGUARD_* values into this shell, and docker-compose prefers
+    # exported env vars over .env file values. Export the new values so
+    # gluetun comes back up on the new endpoint.
+    export WIREGUARD_ENDPOINT_IP="$endpoint_ip" \
+           WIREGUARD_ENDPOINT_PORT="$endpoint_port" \
+           WIREGUARD_PUBLIC_KEY="$public_key" \
+           WIREGUARD_PRIVATE_KEY="$private_key" \
+           WIREGUARD_ADDRESSES="$addresses"
 }
 
 # Function to apply new configuration
 apply_new_config() {
     local server_location="$1"
-    local force="${2:-false}"
-    
+
     log "info" "Applying new WireGuard configuration for: $server_location"
 
-    if ! "$PRIVADO_API_DIR/privado_generate_config.sh" "$server_location" true; then
+    local config_json
+    if ! config_json=$("$PRIVADO_WG" config "$server_location" --format json); then
         log "error" "Failed to generate new configuration"
         return 1
     fi
 
-    # The script-level `set -o allexport; source .env` at startup exported the
-    # OLD WIREGUARD_* values into this shell. docker-compose uses exported
-    # env vars in preference to .env file values, so without clearing them
-    # gluetun would come back up on the previous endpoint. Reload from the
-    # freshly-rewritten .env so docker-compose sees the new server.
-    unset WIREGUARD_ENDPOINT_IP WIREGUARD_ENDPOINT_PORT \
-          WIREGUARD_PUBLIC_KEY WIREGUARD_PRIVATE_KEY WIREGUARD_ADDRESSES
-    set -o allexport
-    # shellcheck disable=SC1090
-    source "$ENV_FILE"
-    set +o allexport
-    log "info" "Reloaded .env after config rewrite (endpoint: ${WIREGUARD_ENDPOINT_IP:-unknown})"
+    local endpoint_ip endpoint_port public_key private_key addresses server_info
+    endpoint_ip=$(jq -r '.wireguard.endpoint_ip' <<<"$config_json")
+    endpoint_port=$(jq -r '.wireguard.endpoint_port' <<<"$config_json")
+    public_key=$(jq -r '.wireguard.public_key' <<<"$config_json")
+    private_key=$(jq -r '.wireguard.private_key' <<<"$config_json")
+    addresses=$(jq -r '.wireguard.address' <<<"$config_json")
+    server_info=$(jq -r '"\(.server.name) (\(.server.city), \(.server.country))"' <<<"$config_json")
+
+    local field
+    for field in endpoint_ip endpoint_port public_key private_key addresses; do
+        if [ -z "${!field}" ] || [ "${!field}" = "null" ]; then
+            log "error" "Incomplete WireGuard configuration from privado-wg (missing $field)"
+            return 1
+        fi
+    done
+
+    update_env_file "$endpoint_ip" "$endpoint_port" "$public_key" "$private_key" "$addresses"
+    log "info" "Provisioned $server_info (endpoint: $endpoint_ip:$endpoint_port)"
 
     # Restart container to apply new configuration
     if ! restart_gluetun; then
@@ -290,15 +303,11 @@ auto_update() {
     # Ensure log directory exists
     mkdir -p "$(dirname "$LOG_FILE")"
     
-    # Authenticate with Privado
-    if ! authenticate_privado; then
-        send_notification "VPN Update Failed" "Failed to authenticate with Privado VPN" "error"
-        return 1
-    fi
-    
-    # Update server list
-    if ! update_server_list; then
-        send_notification "VPN Update Failed" "Failed to update server list" "error"
+    # Refresh the server list; privado-wg authenticates as needed (cached
+    # token, one retry on a stale one)
+    log "info" "Updating server list..."
+    if ! "$PRIVADO_WG" servers --refresh >/dev/null; then
+        send_notification "VPN Update Failed" "Failed to fetch Privado server list" "error"
         return 1
     fi
     

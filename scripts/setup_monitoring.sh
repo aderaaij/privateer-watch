@@ -41,7 +41,7 @@ echo -e "${GREEN}✓ Directories created${NC}"
 # Make scripts executable
 echo -e "${BLUE}Setting script permissions...${NC}"
 chmod +x "$SCRIPT_DIR"/*.sh 2>/dev/null
-chmod +x "$SCRIPT_DIR"/privado-api/*.sh 2>/dev/null
+chmod +x "$SCRIPT_DIR"/privado-api/privado-wg 2>/dev/null
 
 echo -e "${GREEN}✓ Scripts are now executable${NC}"
 

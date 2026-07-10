@@ -84,19 +84,20 @@ The system will prefer servers from these locations when selecting automatically
 - Discord/DSM notifications
 - Comprehensive logging
 
-### 2. Privado API Scripts (`scripts/privado-api/`)
+### 2. Privado API CLI (`scripts/privado-api/privado-wg`)
 
-**Authentication and server management** scripts for Privado VPN API:
+The Privado API client is a standalone project,
+[privado-wg](https://github.com/aderaaij/privado-wg), vendored as a single
+file. `auto_update_wireguard.sh` calls it for authentication, server lists,
+and WireGuard provisioning. It can also be driven manually — it reads the
+Privado credentials from the environment:
 
 ```bash
-# Authenticate with Privado VPN
-<stack-root>/scripts/privado-api/privado_login.sh
+# Load credentials, then e.g.:
+sudo bash -c 'set -a; . <stack-root>/.env; set +a; \
+  <stack-root>/scripts/privado-api/privado-wg servers'
 
-# Get list of available servers
-<stack-root>/scripts/privado-api/privado_get_servers.sh
-
-# Generate configuration for specific server
-<stack-root>/scripts/privado-api/privado_generate_config.sh Amsterdam true
+# Other commands: login [--force], config <location> [--format conf|gluetun-env|json]
 ```
 
 ### 3. Enhanced Monitor Script (`wireguard_monitor.sh`)
@@ -240,12 +241,12 @@ cat <stack-root>/gluetun/vpn_status.txt
 **Authentication Fails**
 - Check PRIVADO_USERNAME and PRIVADO_PASSWORD in .env
 - Verify Privado account is active
-- Test login manually: `sudo <stack-root>/scripts/privado-api/privado_login.sh`
+- Test login manually: `sudo bash -c 'set -a; . <stack-root>/.env; set +a; <stack-root>/scripts/privado-api/privado-wg login --force'`
 
 **No Servers Found**
 - Check internet connectivity
 - Verify Privado API is accessible
-- Test server list: `sudo <stack-root>/scripts/privado-api/privado_get_servers.sh`
+- Test server list: `sudo bash -c 'set -a; . <stack-root>/.env; set +a; <stack-root>/scripts/privado-api/privado-wg servers --refresh'`
 
 **Automation Not Running**
 - Check DSM Task Scheduler tasks are enabled
@@ -307,9 +308,7 @@ grep "latency" <stack-root>/logs/auto_wireguard.log
 │  ├── auto_update_wireguard.sh (main automation)           │
 │  ├── wireguard_monitor.sh (enhanced monitoring)           │
 │  └── privado-api/ (API integration)                       │
-│      ├── privado_login.sh                                 │
-│      ├── privado_get_servers.sh                           │
-│      └── privado_generate_config.sh                       │
+│      └── privado-wg (vendored CLI)                        │
 ├─────────────────────────────────────────────────────────────┤
 │  Data & Configuration                                      │
 │  ├── .env (credentials & preferences)                     │
