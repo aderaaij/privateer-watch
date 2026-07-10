@@ -1,0 +1,486 @@
+#!/usr/bin/env bash
+#
+# privado-wg — WireGuard config fetcher for Privado VPN
+# https://github.com/aderaaij/privado-wg
+#
+# Privado does not publish WireGuard configs through a documented API, and
+# Gluetun's built-in Privado support is OpenVPN-only. This tool drives the
+# same endpoints the official Privado desktop app uses:
+#
+#   1. POST https://client-api.privado.io/v1/login     -> bearer token
+#      GET  https://client-api.privado.io/v1/servers   -> server list
+#   2. POST https://<server>:44121/api/1.0/login       -> WireGuard credentials
+#      (the server generates a fresh keypair and returns the private key;
+#       sessions go stale after ~12h of inactivity)
+#
+# Requirements: bash 3.2+, curl, jq
+#
+set -euo pipefail
+
+VERSION="0.1.0"
+
+# --- configuration (all env-overridable) ------------------------------------
+API_URL="${PRIVADO_API_URL:-https://client-api.privado.io/v1}"
+# API key and User-Agent of the official Privado desktop client; the client
+# API rejects requests without them.
+API_KEY="${PRIVADO_API_KEY:-9f994c466340e8f2ed60a99396fecb6a}"
+USER_AGENT="${PRIVADO_USER_AGENT:-App: 3.0.0 (576942783), macOS: Version 12.4 (Build 21F79)}"
+WG_API_PORT="${PRIVADO_WG_API_PORT:-44121}"
+DEFAULT_DNS="${PRIVADO_WG_DNS:-198.18.0.1,198.18.0.2}"
+
+DATA_DIR="${PRIVADO_WG_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/privado-wg}"
+TOKEN_FILE="$DATA_DIR/token.json"
+SERVERS_FILE="$DATA_DIR/servers.json"
+
+TOKEN_MAX_AGE="${PRIVADO_WG_TOKEN_MAX_AGE:-3300}"       # re-login after 55 min
+SERVERS_MAX_AGE="${PRIVADO_WG_SERVERS_MAX_AGE:-86400}"  # refresh list after 24 h
+
+# Exit codes
+EX_API=1        # network / API failure
+EX_USAGE=2      # bad invocation
+EX_AUTH=3       # authentication rejected
+EX_NOTFOUND=4   # no server matches the requested location
+
+# --- helpers -----------------------------------------------------------------
+info() { echo "$*" >&2; }
+
+die() {
+    local code="$1"; shift
+    echo "ERROR: $*" >&2
+    exit "$code"
+}
+
+# mtime that works with both GNU (Linux/Synology) and BSD (macOS) stat
+file_mtime() {
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
+file_age() {
+    echo $(( $(date +%s) - $(file_mtime "$1") ))
+}
+
+ensure_deps() {
+    command -v curl >/dev/null 2>&1 || die 127 "curl is required but not installed"
+    command -v jq >/dev/null 2>&1 || die 127 "jq is required but not installed"
+}
+
+ensure_credentials() {
+    [ -n "${PRIVADO_USERNAME:-}" ] || die "$EX_USAGE" "PRIVADO_USERNAME is not set"
+    [ -n "${PRIVADO_PASSWORD:-}" ] || die "$EX_USAGE" "PRIVADO_PASSWORD is not set"
+}
+
+ensure_data_dir() {
+    mkdir -p "$DATA_DIR"
+    chmod 700 "$DATA_DIR" 2>/dev/null || true
+}
+
+# api_request METHOD URL [JSON_DATA] [BEARER_TOKEN]
+# Sets API_STATUS (HTTP code) and API_BODY. Returns non-zero only when the
+# request itself failed (network error); HTTP errors are left to the caller.
+API_STATUS=""
+API_BODY=""
+api_request() {
+    local method="$1" url="$2" data="${3:-}" token="${4:-}"
+    local tmp
+    tmp=$(mktemp "${TMPDIR:-/tmp}/privado-wg.XXXXXX")
+
+    local -a args=(
+        --compressed --silent --show-error
+        --connect-timeout 15 --max-time 60
+        -H "User-Agent: $USER_AGENT"
+        -H 'Content-Type: application/json'
+        -w '%{http_code}' -o "$tmp"
+    )
+    [ -n "$token" ] && args+=( -H "Authorization: Bearer $token" )
+    [ "$method" = "POST" ] && args+=( -X POST -d "$data" )
+
+    if ! API_STATUS=$(curl "$url" "${args[@]}"); then
+        rm -f "$tmp"
+        return 1
+    fi
+    API_BODY=$(cat "$tmp")
+    rm -f "$tmp"
+    return 0
+}
+
+save_json() {
+    # write atomically with owner-only permissions
+    local file="$1" content="$2"
+    ensure_data_dir
+    ( umask 077; printf '%s\n' "$content" > "$file.new" )
+    mv "$file.new" "$file"
+}
+
+# --- auth --------------------------------------------------------------------
+do_login() {
+    ensure_credentials
+    info "Authenticating with Privado VPN (user: $PRIVADO_USERNAME)..."
+
+    local payload
+    payload=$(jq -n --arg k "$API_KEY" --arg u "$PRIVADO_USERNAME" --arg p "$PRIVADO_PASSWORD" \
+        '{api_key: $k, username: $u, password: $p}')
+
+    api_request POST "$API_URL/login" "$payload" \
+        || die "$EX_API" "network error talking to $API_URL/login"
+
+    if [ "$API_STATUS" != "200" ]; then
+        die "$EX_AUTH" "login failed (HTTP $API_STATUS): $(printf '%s' "$API_BODY" | head -c 300)"
+    fi
+
+    local token
+    token=$(printf '%s' "$API_BODY" | jq -r '.access_token // empty' 2>/dev/null)
+    [ -n "$token" ] || die "$EX_AUTH" "login failed: no access_token in response"
+
+    save_json "$TOKEN_FILE" "$API_BODY"
+    info "✓ Authenticated; token cached at $TOKEN_FILE"
+}
+
+token_is_fresh() {
+    [ -f "$TOKEN_FILE" ] || return 1
+    [ "$(file_age "$TOKEN_FILE")" -lt "$TOKEN_MAX_AGE" ] || return 1
+    [ -n "$(jq -r '.access_token // empty' "$TOKEN_FILE" 2>/dev/null)" ]
+}
+
+ensure_token() {
+    token_is_fresh || do_login
+}
+
+get_token() {
+    jq -r '.access_token' "$TOKEN_FILE"
+}
+
+cmd_login() {
+    local force=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --force) force=true ;;
+            *) die "$EX_USAGE" "unknown option for login: $1" ;;
+        esac
+        shift
+    done
+
+    if [ "$force" = "false" ] && token_is_fresh; then
+        info "Token is still fresh (< $((TOKEN_MAX_AGE / 60)) min old); use --force to re-authenticate"
+        return 0
+    fi
+    do_login
+}
+
+# --- server list ---------------------------------------------------------------
+fetch_servers() {
+    ensure_token
+    info "Fetching server list..."
+
+    api_request GET "$API_URL/servers?nodes=all&includegeo=1" "" "$(get_token)" \
+        || die "$EX_API" "network error talking to $API_URL/servers"
+
+    # A cached-but-invalidated token comes back as 401; re-login once and retry
+    if [ "$API_STATUS" = "401" ]; then
+        info "Token rejected; re-authenticating..."
+        do_login
+        api_request GET "$API_URL/servers?nodes=all&includegeo=1" "" "$(get_token)" \
+            || die "$EX_API" "network error talking to $API_URL/servers"
+    fi
+
+    if [ "$API_STATUS" != "200" ]; then
+        die "$EX_API" "server list request failed (HTTP $API_STATUS): $(printf '%s' "$API_BODY" | head -c 300)"
+    fi
+
+    local count
+    count=$(printf '%s' "$API_BODY" | jq '.servers | length' 2>/dev/null || echo 0)
+    [ "$count" -gt 0 ] || die "$EX_API" "server list response contained no servers"
+
+    save_json "$SERVERS_FILE" "$API_BODY"
+    info "✓ Retrieved $count servers; cached at $SERVERS_FILE"
+}
+
+ensure_servers() {
+    if [ ! -f "$SERVERS_FILE" ] || [ "$(file_age "$SERVERS_FILE")" -ge "$SERVERS_MAX_AGE" ]; then
+        fetch_servers
+    fi
+}
+
+cmd_servers() {
+    local refresh=false json=false
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --refresh) refresh=true ;;
+            --json) json=true ;;
+            *) die "$EX_USAGE" "unknown option for servers: $1" ;;
+        esac
+        shift
+    done
+
+    if [ "$refresh" = "true" ]; then
+        fetch_servers
+    else
+        ensure_servers
+    fi
+
+    if [ "$json" = "true" ]; then
+        cat "$SERVERS_FILE"
+    else
+        jq -r '.servers[] | select(.maintenance != true) | "\(.country)\t\(.city)\t\(.name)"' \
+            "$SERVERS_FILE" | sort -u
+    fi
+}
+
+# --- config generation ---------------------------------------------------------
+# Match a server by country code, city, or hostname: exact match first, then
+# substring. Servers flagged for maintenance are skipped.
+find_server() {
+    local loc
+    loc=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+
+    local server
+    server=$(jq -c --arg loc "$loc" '
+        [.servers[] | select(.maintenance != true) | select(
+            (.country | ascii_downcase) == $loc or
+            (.city | ascii_downcase) == $loc or
+            (.name | ascii_downcase) == $loc
+        )][0] // empty' "$SERVERS_FILE")
+
+    if [ -z "$server" ]; then
+        server=$(jq -c --arg loc "$loc" '
+            [.servers[] | select(.maintenance != true) | select(
+                (.country | ascii_downcase | contains($loc)) or
+                (.city | ascii_downcase | contains($loc)) or
+                (.name | ascii_downcase | contains($loc))
+            )][0] // empty' "$SERVERS_FILE")
+    fi
+
+    printf '%s\n' "$server"
+}
+
+# Ask the VPN server itself for WireGuard credentials. This is the
+# undocumented part: every Privado server runs an HTTPS API on port 44121
+# that authenticates with the account credentials and returns a
+# server-generated keypair plus the client tunnel IP.
+provision_wireguard() {
+    local server_name="$1"
+    ensure_credentials
+
+    info "Requesting WireGuard credentials from $server_name:$WG_API_PORT..."
+
+    local payload
+    payload=$(jq -n --arg u "$PRIVADO_USERNAME" --arg p "$PRIVADO_PASSWORD" \
+        '{Username: $u, Password: $p}')
+
+    api_request POST "https://$server_name:$WG_API_PORT/api/1.0/login" "$payload" \
+        || die "$EX_API" "network error talking to $server_name:$WG_API_PORT"
+
+    if [ "$API_STATUS" != "200" ]; then
+        die "$EX_API" "WireGuard provisioning failed (HTTP $API_STATUS): $(printf '%s' "$API_BODY" | head -c 300)"
+    fi
+
+    local status
+    status=$(printf '%s' "$API_BODY" | jq -r '.Status // empty' 2>/dev/null)
+    if [ "$status" != "OK" ]; then
+        die "$EX_API" "WireGuard provisioning returned status '${status:-invalid response}'"
+    fi
+}
+
+cmd_config() {
+    local location="" format="conf" output="" dns="$DEFAULT_DNS"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --format) format="${2:?--format needs a value}"; shift ;;
+            --output|-o) output="${2:?--output needs a value}"; shift ;;
+            --dns) dns="${2:?--dns needs a value}"; shift ;;
+            -*) die "$EX_USAGE" "unknown option for config: $1" ;;
+            *)
+                [ -z "$location" ] || die "$EX_USAGE" "unexpected argument: $1"
+                location="$1"
+                ;;
+        esac
+        shift
+    done
+    [ -n "$location" ] || die "$EX_USAGE" "usage: privado-wg config <location> [--format conf|gluetun-env|json] [--output FILE] [--dns IPS]"
+    case "$format" in
+        conf|gluetun-env|json) ;;
+        *) die "$EX_USAGE" "unknown format: $format (expected conf, gluetun-env, or json)" ;;
+    esac
+
+    ensure_credentials
+    ensure_token
+    ensure_servers
+
+    local server
+    server=$(find_server "$location")
+    if [ -z "$server" ]; then
+        info "No server matches '$location'. Available locations:"
+        jq -r '.servers[] | select(.maintenance != true) | "\(.country) - \(.city)"' \
+            "$SERVERS_FILE" | sort -u >&2
+        die "$EX_NOTFOUND" "no server found for location: $location"
+    fi
+
+    local name city country
+    name=$(printf '%s' "$server" | jq -r '.name')
+    city=$(printf '%s' "$server" | jq -r '.city')
+    country=$(printf '%s' "$server" | jq -r '.country')
+    info "✓ Selected server: $name ($city, $country)"
+
+    provision_wireguard "$name"
+
+    local private_key public_key address endpoint_ip endpoint_port
+    private_key=$(printf '%s' "$API_BODY" | jq -r '.WGPrivateKey // empty')
+    public_key=$(printf '%s' "$API_BODY" | jq -r '.ServerPublicKey // empty')
+    address=$(printf '%s' "$API_BODY" | jq -r '.WGIPAddress // empty')
+    endpoint_ip=$(printf '%s' "$API_BODY" | jq -r '.ServerIPAddress // empty')
+    endpoint_port=$(printf '%s' "$API_BODY" | jq -r '.ServerListeningPort // empty')
+
+    # Fall back to the server-list IP and default port for older responses
+    [ -n "$endpoint_ip" ] || endpoint_ip=$(printf '%s' "$server" | jq -r '.ip_address')
+    [ -n "$endpoint_port" ] || endpoint_port="51820"
+
+    if [ -z "$private_key" ] || [ -z "$public_key" ] || [ -z "$address" ]; then
+        die "$EX_API" "incomplete WireGuard credentials in response from $name"
+    fi
+
+    # Tunnel IP comes back bare; WireGuard wants CIDR notation
+    case "$address" in
+        */*) ;;
+        *) address="$address/32" ;;
+    esac
+
+    local rendered
+    case "$format" in
+        conf)
+            rendered="[Interface]
+PrivateKey = $private_key
+Address = $address
+DNS = $dns
+
+[Peer]
+PublicKey = $public_key
+AllowedIPs = 0.0.0.0/0
+Endpoint = $endpoint_ip:$endpoint_port"
+            ;;
+        gluetun-env)
+            rendered="# privado-wg: $name ($city, $country)
+WIREGUARD_ENDPOINT_IP=\"$endpoint_ip\"
+WIREGUARD_ENDPOINT_PORT=\"$endpoint_port\"
+WIREGUARD_PUBLIC_KEY=\"$public_key\"
+WIREGUARD_PRIVATE_KEY=\"$private_key\"
+WIREGUARD_ADDRESSES=\"$address\""
+            ;;
+        json)
+            rendered=$(jq -n \
+                --argjson server "$server" \
+                --arg private_key "$private_key" \
+                --arg public_key "$public_key" \
+                --arg address "$address" \
+                --arg endpoint_ip "$endpoint_ip" \
+                --arg endpoint_port "$endpoint_port" \
+                --arg dns "$dns" \
+                '{
+                    server: ($server | {name, city, country, ip_address}),
+                    wireguard: {
+                        private_key: $private_key,
+                        public_key: $public_key,
+                        address: $address,
+                        endpoint_ip: $endpoint_ip,
+                        endpoint_port: $endpoint_port,
+                        dns: $dns
+                    }
+                }')
+            ;;
+    esac
+
+    if [ -n "$output" ]; then
+        ( umask 077; printf '%s\n' "$rendered" > "$output" )
+        info "✓ Config written to $output"
+    else
+        printf '%s\n' "$rendered"
+    fi
+}
+
+# --- candidates ----------------------------------------------------------------
+# Emit locations in preference order (cities first, then countries), one per
+# line — feed these to `config` in sequence until one yields a working tunnel.
+cmd_candidates() {
+    local cities="${PRIVADO_WG_CITIES:-}" countries="${PRIVADO_WG_COUNTRIES:-}"
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --cities) cities="${2:?--cities needs a value}"; shift ;;
+            --countries) countries="${2:?--countries needs a value}"; shift ;;
+            *) die "$EX_USAGE" "unknown option for candidates: $1" ;;
+        esac
+        shift
+    done
+
+    local emitted=0 item
+    local old_ifs="$IFS"
+    IFS=','
+    for item in $cities $countries; do
+        item=$(printf '%s' "$item" | tr -d ' ')
+        if [ -n "$item" ]; then
+            printf '%s\n' "$item"
+            emitted=$((emitted + 1))
+        fi
+    done
+    IFS="$old_ifs"
+
+    if [ "$emitted" -eq 0 ]; then
+        info "No preferences given; set --cities/--countries or PRIVADO_WG_CITIES/PRIVADO_WG_COUNTRIES"
+    fi
+}
+
+# --- usage ---------------------------------------------------------------------
+usage() {
+    cat <<'EOF'
+privado-wg — WireGuard config fetcher for Privado VPN
+
+Usage: privado-wg <command> [options]
+
+Commands:
+  login [--force]           Authenticate and cache an API token
+                            (skipped when the cached token is < 55 min old)
+  servers [--refresh]       List locations as "COUNTRY  CITY  NAME"
+          [--json]          Dump the raw server list JSON
+  config <location>         Provision WireGuard credentials for a location
+                            (country code, city, or server name; auto-logs-in
+                            and auto-fetches the server list as needed)
+      --format FORMAT       conf (default, wg-quick style) | gluetun-env | json
+      --output FILE, -o     Write to FILE (mode 600) instead of stdout
+      --dns IPS             DNS servers for conf output (default Privado's)
+  candidates                Print preference-ordered locations, one per line
+      --cities a,b,c        Preferred cities, tried first
+      --countries X,Y       Preferred country codes, tried after cities
+  version | help
+
+Environment:
+  PRIVADO_USERNAME          Privado account username        (required)
+  PRIVADO_PASSWORD          Privado account password        (required)
+  PRIVADO_WG_DATA_DIR       Cache dir for token + server list
+                            (default: ~/.local/share/privado-wg)
+  PRIVADO_WG_CITIES         Default --cities for candidates
+  PRIVADO_WG_COUNTRIES      Default --countries for candidates
+  PRIVADO_WG_DNS            Default --dns for conf output
+
+Examples:
+  privado-wg config Amsterdam                     # print a wg-quick config
+  privado-wg config NL --format gluetun-env       # Gluetun WIREGUARD_* vars
+  privado-wg config Berlin -o /etc/wireguard/wg0.conf
+  privado-wg servers | grep PT
+
+Exit codes: 0 ok, 1 API/network failure, 2 usage error,
+            3 authentication rejected, 4 location not found
+EOF
+}
+
+# --- main ----------------------------------------------------------------------
+ensure_deps
+
+COMMAND="${1:-help}"
+[ $# -gt 0 ] && shift
+
+case "$COMMAND" in
+    login)      cmd_login "$@" ;;
+    servers)    cmd_servers "$@" ;;
+    config)     cmd_config "$@" ;;
+    candidates) cmd_candidates "$@" ;;
+    version|--version|-V) echo "privado-wg $VERSION" ;;
+    help|--help|-h) usage ;;
+    *) usage >&2; die "$EX_USAGE" "unknown command: $COMMAND" ;;
+esac

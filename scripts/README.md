@@ -111,10 +111,17 @@ Creates the penalty custom formats for the space-saver quality profiles
 if the profiles are ever recreated.
 
 ### 12. `privado-api/`
-Privado VPN API integration scripts for automated server management:
-- `privado_login.sh` - Authenticate with Privado API
-- `privado_get_servers.sh` - Fetch available server list
-- `privado_generate_config.sh` - Generate WireGuard config from API
+Privado VPN API integration for automated server management. The API client
+lives in its own project — [privado-wg](https://github.com/aderaaij/privado-wg) —
+and a copy is vendored here; the original script names are kept as thin
+wrappers so existing docs and DSM tasks keep working:
+- `privado-wg` - Vendored CLI (auth, server list, WireGuard provisioning);
+  sync with `curl -fsSL -o privado-wg https://raw.githubusercontent.com/aderaaij/privado-wg/main/privado-wg`
+- `privado_login.sh` - Wrapper: loads `.env` creds, runs `privado-wg login --force`
+- `privado_get_servers.sh` - Wrapper: runs `privado-wg servers --refresh`
+- `privado_generate_config.sh` - Wrapper: runs `privado-wg config <location>`,
+  then writes the `WIREGUARD_*` vars into the stack `.env` (with backup) —
+  the only stack-specific part
 - `data/` - Cached API data (gitignored — contains tokens)
 
 ### 13. `lib/common.sh`
@@ -202,7 +209,8 @@ When Privado changes their WireGuard configuration:
 │   ├── task_update.sh
 │   ├── test_automation.sh
 │   └── privado-api/            # Privado VPN API integration
-│       ├── privado_login.sh
+│       ├── privado-wg          # Vendored CLI (github.com/aderaaij/privado-wg)
+│       ├── privado_login.sh    # Back-compat wrappers around privado-wg
 │       ├── privado_get_servers.sh
 │       ├── privado_generate_config.sh
 │       └── data/

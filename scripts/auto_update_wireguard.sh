@@ -208,8 +208,12 @@ authenticate_privado() {
             return 1
         fi
     else
-        # Check if token is still valid (simple check)
-        local token_age=$(( $(date +%s) - $(stat -f%m "$PRIVADO_API_DIR/data/token.json" 2>/dev/null || echo 0) ))
+        # Check if token is still valid (simple check).
+        # GNU stat (Synology) uses -c %Y; BSD/macOS stat uses -f %m.
+        local token_file="$PRIVADO_API_DIR/data/token.json"
+        local token_mtime
+        token_mtime=$(stat -c %Y "$token_file" 2>/dev/null || stat -f %m "$token_file" 2>/dev/null || echo 0)
+        local token_age=$(( $(date +%s) - token_mtime ))
         if [ "$token_age" -gt 3600 ]; then  # Token older than 1 hour
             log "info" "Token expired, re-authenticating..."
             if ! "$PRIVADO_API_DIR/privado_login.sh"; then
