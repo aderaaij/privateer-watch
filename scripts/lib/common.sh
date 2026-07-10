@@ -24,6 +24,15 @@
 [ -n "${MEDIASTACK_COMMON_LOADED:-}" ] && return 0
 MEDIASTACK_COMMON_LOADED=1
 
+# Synology keeps docker/docker-compose in /usr/local/bin, which DSM task
+# sessions have in PATH but plain ssh/sudo sessions don't. Ensure it's
+# present so the COMPOSE detection below (and every docker call in the
+# scripts) works no matter how we were invoked.
+case ":$PATH:" in
+    *:/usr/local/bin:*) ;;
+    *) PATH="/usr/local/bin:$PATH" ;;
+esac
+
 _COMMON_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPTS_DIR="$(cd "$_COMMON_LIB_DIR/.." && pwd)"
 ROOT_DIR="${DOCKERCONFDIR:-$(cd "$SCRIPTS_DIR/.." && pwd)}"
