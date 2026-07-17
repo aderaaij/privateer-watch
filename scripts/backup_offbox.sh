@@ -51,7 +51,7 @@ KEEP="$(env_or_dotenv BACKUP_KEEP 14)"
 # Apps that keep their own scheduled backup zips. cleanuparr/scoutarr/seerr
 # have no such zips, so their whole config dir would be needed - out of scope
 # for a "tiny" helper; they rebuild fast from the web UI.
-ARR_APPS="sonarr radarr prowlarr readarr bazarr"
+ARR_APPS="sonarr radarr prowlarr bazarr"
 
 REMOTE="${REMOTE_USER}@${REMOTE_HOST}"
 SSH="ssh -p ${REMOTE_PORT} -o BatchMode=yes -o ConnectTimeout=10"

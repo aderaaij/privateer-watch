@@ -96,6 +96,10 @@ services:
     volumes:
       - ${DOCKERCONFDIR}/qbittorrent:/config
       - ${DOCKERSTORAGEDIR}/torrents:/data/torrents
+      # Audiobooks have no *arr to hardlink them out of /data/torrents, so the
+      # "audiobooks" category saves straight into the library Audiobookshelf
+      # reads (and keeps seeding from there). See docs/audiobooks.md.
+      - ${DOCKERSTORAGEDIR}/media/audiobooks:/data/media/audiobooks
     network_mode: service:gluetun # run on the vpn network
     depends_on:
       gluetun:
@@ -255,7 +259,6 @@ services:
       - RADARR_API_KEY=${MCP_RADARR_API_KEY}
       - SABNZBD_API_KEY=${MCP_SABNZBD_API_KEY}
       - PROWLARR_API_KEY=${MCP_PROWLARR_API_KEY}
-      - READARR_API_KEY=${MCP_READARR_API_KEY}
       - BAZARR_API_KEY=${MCP_BAZARR_API_KEY}
       - SEERR_API_KEY=${MCP_SEERR_API_KEY}
       - QBITTORRENT_USERNAME=${MCP_QBITTORRENT_USERNAME}
@@ -288,7 +291,6 @@ services:
       - RADARR_API_KEY=${MCP_RADARR_API_KEY}
       - SABNZBD_API_KEY=${MCP_SABNZBD_API_KEY}
       - PROWLARR_API_KEY=${MCP_PROWLARR_API_KEY}
-      - READARR_API_KEY=${MCP_READARR_API_KEY}
       - BAZARR_API_KEY=${MCP_BAZARR_API_KEY}
       - SEERR_API_KEY=${MCP_SEERR_API_KEY}
       - QBITTORRENT_USERNAME=${MCP_QBITTORRENT_USERNAME}
@@ -358,20 +360,8 @@ services:
     volumes:
       - ${DOCKERCONFDIR}/cleanuparr:/config
 
-  ## Readarrr
-  readarr:
-    image: ghcr.io/hotio/readarr:latest
-    container_name: readarr
-    restart: unless-stopped
-    environment: 
-      - PUID=${PUID}
-      - PGID=${PGID}
-      - TZ=${TZ}
-      - LOG_LEVEL=info
-    ports:
-      - 8787:8787
-    volumes:
-      - /etc/localtime:/etc/localtime:ro
-      - ${DOCKERCONFDIR}/readarr:/config
-      - ${DOCKERSTORAGEDIR}:/data
-    network_mode: synobridge  
+  # Audiobooks have no dedicated app: Readarr was retired upstream (and can't
+  # auth with qBittorrent 5.2+), and a *arr-style daemon is a poor fit anyway —
+  # books don't get new releases, so there's nothing to monitor. Grab them from
+  # Prowlarr's Search tab into qBittorrent's "audiobooks" category; Audiobookshelf
+  # (on ardencore) scans the result. See docs/audiobooks.md.
