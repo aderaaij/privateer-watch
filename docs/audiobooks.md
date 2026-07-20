@@ -37,6 +37,29 @@ can read the files fine (it runs as uid 1027, same as qBittorrent).
 API every 30 minutes (hence the `scan` API key in ABS, and the
 `[LibraryController] Scan complete` lines in its log — not ABS's own scheduler).
 Verified 2026-07-16: a grab at ~20:5x was in the library by the 21:00 scan.
+The scanner is a **user-level systemd timer on ardencore** (`systemctl --user
+list-timers` as arden): `audiobookshelf-scan.timer` → `~/.local/bin/abs-scan`,
+token at `~/.config/audiobookshelf/token`.
+
+### Instant scan on torrent completion (added 2026-07-18)
+
+Torrent grabs no longer wait for the 30-min timer. qBittorrent's "run external
+program on torrent finished" is set to `/config/abs-scan-hook.sh "%L"`
+(`autorun_program` in its prefs). The hook exits unless the category is
+`audiobooks`, then POSTs to ABS's scan API on ardencore directly and logs to
+`/config/abs-scan-hook.log`. Pieces:
+
+- `scripts/abs-scan-hook.sh` — the hook (ardencore IP + library id inline),
+  bind-mounted read-only into the container at `/config/abs-scan-hook.sh` so
+  it lives in the repo instead of loose in the ignored `qbittorrent/` dir
+- `qbittorrent/abs-token` — ABS API key, chmod 600 (same key style as
+  abs-scan). Stays out of git — `qbittorrent/` is gitignored.
+- gluetun `FIREWALL_OUTBOUND_SUBNETS=192.168.1.0/24` in docker-compose.yml —
+  without it gluetun's firewall drops the LAN request and the hook times out.
+  Torrent traffic to public IPs still goes through the tunnel.
+
+The 30-min timer stays as the fallback (and still covers Libation/Mac drops).
+Verified 2026-07-18: manual hook run → ABS `Scan complete` within 1s.
 
 That's why the library's `autoScanCronExpression` is `null` and
 `disableWatcher` is `false`. **Both are correct — leave them alone.** ABS's
@@ -53,7 +76,8 @@ monitor. It's a search, not a subscription.
 1. Prowlarr -> Search, query the title
 2. Grab -> goes to qBittorrent's `audiobooks` category -> saves straight into
    `/data/media/audiobooks` (and seeds from there)
-3. Wait for the scheduled ABS scan, then use ABS's **Match** to pull proper
+3. On completion qBittorrent triggers an ABS scan immediately (see above; the
+   30-min timer is the fallback), then use ABS's **Match** to pull proper
    metadata/cover from Audible — this is why sloppy release naming doesn't matter
 
 **Search without a category filter.** Category 3030 (Audio/Audiobook) returns

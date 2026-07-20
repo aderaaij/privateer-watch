@@ -21,6 +21,10 @@ services:
       - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
       - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
       - FIREWALL_VPN_INPUT_PORTS=24140
+      # Allow outbound LAN traffic (outside the tunnel) so qbittorrent's
+      # completion hook can trigger an Audiobookshelf scan on ardencore.
+      # Torrent/tracker traffic to public IPs still goes through the VPN.
+      - FIREWALL_OUTBOUND_SUBNETS=192.168.1.0/24
       - PUID=${PUID}
       - PGID=${PGID}
       - TZ=${TZ}
@@ -100,6 +104,9 @@ services:
       # "audiobooks" category saves straight into the library Audiobookshelf
       # reads (and keeps seeding from there). See docs/audiobooks.md.
       - ${DOCKERSTORAGEDIR}/media/audiobooks:/data/media/audiobooks
+      # "Run on torrent finished" hook, kept in the repo rather than loose in
+      # /config. qBittorrent's autorun_program still points at the /config path.
+      - ${DOCKERCONFDIR}/scripts/abs-scan-hook.sh:/config/abs-scan-hook.sh:ro
     network_mode: service:gluetun # run on the vpn network
     depends_on:
       gluetun:
