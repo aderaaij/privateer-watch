@@ -9,9 +9,9 @@
 #   Radarr:  CF "Remux Penalty"  (quality modifier = REMUX)      -> -10000 in
 #            "UHD Bluray + WEB" and "HD Bluray + WEB"
 #   Sonarr:  CF "Remux Penalty"  (release title matches /remux/) -> -10000 in
-#            "WEB-1080p" and "WEB-2160p"
+#            "WEB-1080p", "WEB-1080p Anime", "WEB-2160p", "WEB-2160p Anime"
 #            CF "2160p Penalty"  (resolution = 2160p)            -> -10000 in
-#            "WEB-1080p" only
+#            "WEB-1080p" and "WEB-1080p Anime" (not the 2160p profiles)
 #   Both:    CF "Foreign Dub Penalty" (title matches /XxxDub/)   -> -10000 in
 #            every space-saver profile
 #
@@ -181,7 +181,12 @@ sonarr_dub_id = ensure_cf(sbase, skey, "Foreign Dub Penalty", DUB_SPEC)
 set_profile_scores(sbase, skey, "WEB-1080p",
                    {sonarr_remux_id: REMUX_PENALTY, sonarr_2160_id: HARD_PENALTY,
                     sonarr_dub_id: HARD_PENALTY})
+set_profile_scores(sbase, skey, "WEB-1080p Anime",
+                   {sonarr_remux_id: REMUX_PENALTY, sonarr_2160_id: HARD_PENALTY,
+                    sonarr_dub_id: HARD_PENALTY})
 set_profile_scores(sbase, skey, "WEB-2160p",
+                   {sonarr_remux_id: REMUX_PENALTY, sonarr_dub_id: HARD_PENALTY})
+set_profile_scores(sbase, skey, "WEB-2160p Anime",
                    {sonarr_remux_id: REMUX_PENALTY, sonarr_dub_id: HARD_PENALTY})
 
 print("Done.")
