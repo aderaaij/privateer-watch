@@ -19,6 +19,15 @@ AUTO_RECOVERY_ENABLED="$(env_or_dotenv WIREGUARD_AUTO_RECOVERY true)"
 MAX_RESTART_ATTEMPTS="$(env_or_dotenv WIREGUARD_MAX_RESTART_ATTEMPTS 3)"
 AUTO_SERVER_SWITCH="$(env_or_dotenv WIREGUARD_AUTO_SERVER_SWITCH true)"
 
+# Stale-endpoint detection. Privado retires server endpoints without notice; the
+# WireGuard handshake still completes but no traffic flows, so gluetun restarts
+# its own tunnel in a tight loop with DNS i/o timeouts. Restarting the container
+# cannot fix that — only a new endpoint can — so recovery skips straight to a
+# server rotation when this signature is present.
+STALE_ENDPOINT_DETECTION="$(env_or_dotenv WIREGUARD_STALE_ENDPOINT_DETECTION true)"
+STALE_ENDPOINT_MIN_RESTARTS="$(env_or_dotenv WIREGUARD_STALE_ENDPOINT_MIN_RESTARTS 3)"
+STALE_ENDPOINT_WINDOW="$(env_or_dotenv WIREGUARD_STALE_ENDPOINT_WINDOW 5m)"
+
 # Discord alerts from the monitor carry a standard prefix
 send_discord_notification() {
     discord_notify "🔔 **WireGuard VPN Alert**\n$1"
@@ -256,6 +265,27 @@ auto_switch_server() {
     fi
 }
 
+# Does gluetun show the stale-endpoint signature?
+# Two conditions together, so an ordinary hiccup does not trip it:
+#   1. gluetun is restarting its own tunnel repeatedly over a short window, and
+#   2. the healthcheck is failing on i/o timeout (traffic never leaves the tunnel)
+#      rather than on a gluetun-side error a restart could clear.
+vpn_endpoint_looks_stale() {
+    [ "$STALE_ENDPOINT_DETECTION" = "true" ] || return 1
+
+    local logs
+    logs=$(docker logs gluetun --since "$STALE_ENDPOINT_WINDOW" 2>&1) || return 1
+
+    local restarts
+    restarts=$(echo "$logs" | grep -c 'restarting VPN because it failed to pass the healthcheck')
+    [ "$restarts" -ge "$STALE_ENDPOINT_MIN_RESTARTS" ] || return 1
+
+    echo "$logs" | grep -q 'i/o timeout' || return 1
+
+    log "Stale-endpoint signature detected: $restarts tunnel restarts in $STALE_ENDPOINT_WINDOW with i/o timeouts"
+    return 0
+}
+
 # Enhanced recovery function
 attempt_recovery() {
     local issue_type="$1"
@@ -272,7 +302,8 @@ attempt_recovery() {
     if [ "$restart_count" -ge "$MAX_RESTART_ATTEMPTS" ]; then
         if [ "$AUTO_SERVER_SWITCH" = "true" ]; then
             log "Max restart attempts reached ($MAX_RESTART_ATTEMPTS), attempting server switch..."
-            return $(auto_switch_server)
+            auto_switch_server
+            return $?
         else
             log "Max restart attempts reached and server switching disabled"
             send_discord_notification "🚨 Max restart attempts reached ($MAX_RESTART_ATTEMPTS) - manual intervention required"
@@ -280,6 +311,18 @@ attempt_recovery() {
         fi
     fi
     
+    # A dead endpoint cannot be restarted back to life. Rotating now avoids
+    # spending a restart cycle (which also takes the download clients down for
+    # the full 180s health wait) and avoids waiting for the next check before
+    # the recent-restart escalation below would unlock.
+    if [ "$AUTO_SERVER_SWITCH" = "true" ] && vpn_endpoint_looks_stale; then
+        log "Endpoint looks stale; rotating server immediately instead of restarting"
+        if auto_switch_server; then
+            return 0
+        fi
+        log "Server rotation failed; falling back to a container restart"
+    fi
+
     # Attempt regular restart
     log "Attempting recovery via container restart (attempt $((restart_count + 1))/$MAX_RESTART_ATTEMPTS)"
     
