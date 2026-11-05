@@ -1,6 +1,6 @@
 services:
   gluetun:
-    image: qmcgaw/gluetun:latest
+    image: qmcgaw/gluetun:v3
     container_name: gluetun
     labels:
       # Excluded from Pullio auto-updates: recreating gluetun orphans
@@ -145,7 +145,10 @@ services:
   # mkdir ${DOCKERCONFDIR}/sonarr
   sonarr:
     container_name: sonarr
-    image: ghcr.io/hotio/sonarr:release
+    # Sonarr v5 beta (2026-11-05): hotio only ships v5 on :nightly. Switch back
+    # to :release once v5 is stable. Rollback = restore a v4 backup from
+    # backups/sonarr-config-v4.0.20-2026-11-05.tar.gz (DB migration is one-way).
+    image: ghcr.io/hotio/sonarr:nightly
     restart: unless-stopped
     logging:
       driver: json-file
@@ -234,6 +237,10 @@ services:
     container_name: seerr
     init: true
     restart: unless-stopped
+    labels:
+      - org.hotio.pullio.update=${PULLIO_UPDATE}
+      - org.hotio.pullio.notify=${PULLIO_NOTIFY}
+      - org.hotio.pullio.discord.webhook=${PULLIO_DISCORD_WEBHOOK}
     environment:
       - TZ=${TZ}
       - LOG_LEVEL=info
@@ -307,7 +314,9 @@ services:
   # Radarr/Sonarr on a schedule. Config: ./recyclarr/recyclarr.yml
   # Manual sync: docker exec recyclarr recyclarr sync
   recyclarr:
-    image: ghcr.io/recyclarr/recyclarr:latest
+    # Recyclarr no longer publishes a :latest tag (pullio failed daily with
+    # "manifest unknown"); track the major-version tag instead.
+    image: ghcr.io/recyclarr/recyclarr:8
     container_name: recyclarr
     restart: unless-stopped
     network_mode: synobridge
